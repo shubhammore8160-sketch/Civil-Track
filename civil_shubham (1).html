@@ -1100,7 +1100,7 @@ body{overflow-x:hidden}
             <input type="checkbox" id="l-remember" checked>
             Remember me
           </label>
-          <button class="forgot-link" onclick="toast('Password reset link sent to your email!','info')">Forgot password?</button>
+          <button class="forgot-link" onclick="resetPassword()">Forgot password?</button>
         </div>
         <button class="btn btn-primary btn-block" id="login-btn" onclick="doLogin()">
           Sign In →
@@ -1343,6 +1343,18 @@ body{overflow-x:hidden}
   </div>
 </div>
 
+<div class="modal-overlay" id="pwModal">
+  <div class="modal">
+    <div class="modal-icon">🔑</div>
+    <h2>Set a new password</h2>
+    <p>Choose a new password for your account.</p>
+    <div class="form-group" style="margin:14px 0"><input class="form-control" id="new-pw" type="password" placeholder="New password (min 6 characters)" autocomplete="new-password"></div>
+    <div class="modal-btns">
+      <button class="btn btn-outline" onclick="document.getElementById('pwModal').classList.remove('open')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitNewPassword()">Update password</button>
+    </div>
+  </div>
+</div>
 <!-- ═══════════════════ MAIN CONTENT ═══════════════════ -->
 <div class="main" id="mainContent" style="margin-left:240px">
 
@@ -1625,7 +1637,10 @@ body{overflow-x:hidden}
     <div class="stat-card"><div class="stat-label">Admins</div><div class="stat-num" id="u-admin">0</div></div>
     <div class="stat-card"><div class="stat-label">Users</div><div class="stat-num" id="u-user">0</div></div>
   </div>
-  <div class="card" style="margin-bottom:20px">
+  <div class="card" id="cloud-user-note" style="display:none;margin-bottom:20px">
+    <div class="card-body"><strong>Live mode:</strong> people create their own account on the sign-up page. Once they have registered, they appear in the table below and you can promote them to Admin or Super Admin, suspend or delete them.</div>
+  </div>
+  <div class="card" id="create-account-card" style="margin-bottom:20px">
     <div class="card-header"><div class="card-title">➕ Create Account</div></div>
     <div class="card-body">
       <div class="form-grid-auto">
@@ -1874,8 +1889,8 @@ body{overflow-x:hidden}
               <div style="font-size:11px;color:var(--slate2)">Your citizen account is active</div>
             </div>
           </div>
-          <button class="btn btn-outline btn-block" onclick="toast('Password reset email sent!','info')" style="margin-bottom:8px">🔒 Change Password</button>
-          <button class="btn btn-danger btn-block" onclick="confirmLogout()">🚪 Sign Out of All Devices</button>
+          <button class="btn btn-outline btn-block" onclick="changePassword()" style="margin-bottom:8px">🔒 Change Password</button>
+          <button class="btn btn-danger btn-block" onclick="signOutEverywhere()">🚪 Sign Out of All Devices</button>
         </div>
       </div>
     </div>
@@ -1886,11 +1901,36 @@ body{overflow-x:hidden}
 </div><!-- /app-shell -->
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
+/* ══════════════════════════════════════
+   SUPABASE CONFIG  ← paste your two values here
+   (Project Settings → API in the Supabase dashboard)
+   Use the public "anon" / "publishable" key. NEVER the service_role key.
+══════════════════════════════════════ */
+const SUPABASE_URL      = 'https://abcdefgh.supabase.co';       // e.g. https://abcdefgh.supabase.co
+const SUPABASE_ANON_KEY = 'eyJhbGciOi...';
+
+let rememberMe = true;
+let sb = null;
+(function initSupabase(){
+  const ok = /^https:\/\/\S+$/.test(SUPABASE_URL) && !SUPABASE_URL.includes('PASTE') && SUPABASE_ANON_KEY.length > 30 && !SUPABASE_ANON_KEY.startsWith('PASTE');
+  if(!ok) return;
+  if(!window.supabase || !window.supabase.createClient){ console.warn('Supabase library failed to load — running in demo mode.'); return; }
+  // "Remember me" unchecked → keep the session only for this tab
+  const storage = {
+    getItem:k=>{const v=sessionStorage.getItem(k);return v!==null?v:localStorage.getItem(k)},
+    setItem:(k,v)=>(rememberMe?localStorage:sessionStorage).setItem(k,v),
+    removeItem:k=>{localStorage.removeItem(k);sessionStorage.removeItem(k)}
+  };
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage}});
+})();
+const CLOUD_ON = !!sb;   // false → demo mode (data stays in this browser)
+
 /* ══════════════════════════════════════
    AUTH STATE
 ══════════════════════════════════════ */
-let currentUser = JSON.parse(localStorage.getItem('sc2_user') || 'null');
+let currentUser = CLOUD_ON ? null : JSON.parse(localStorage.getItem('sc2_user') || 'null');
 
 // Demo credentials store
 const DEMO_USERS = JSON.parse(localStorage.getItem('sc2_users') || '{}');
@@ -1904,10 +1944,11 @@ const ROLE_BADGE={user:'rb-user',admin:'rb-admin',superadmin:'rb-super'};
 function roleLevel(){return ROLE_LEVEL[currentUser&&currentUser.role]||1}
 function can(min){return roleLevel()>=min}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function getUsers(){return JSON.parse(localStorage.getItem('sc2_users')||'{}')}
-function saveUsers(u){localStorage.setItem('sc2_users',JSON.stringify(u))}
+function getUsers(){return CLOUD_ON?cloudUsers:JSON.parse(localStorage.getItem('sc2_users')||'{}')}
+function saveUsers(u){if(CLOUD_ON)return;localStorage.setItem('sc2_users',JSON.stringify(u))}
 
 function seedUsers(){
+  if(CLOUD_ON)return;
   const u=getUsers(); let ch=false;
   const seed=[
     {name:'Super Admin',email:'superadmin@civictrack.gov.in',pw:'Super@123',ward:'Navrangpura',role:'superadmin'},
@@ -1923,7 +1964,7 @@ function seedUsers(){
 }
 // Re-check the saved session against the user store (role changes / suspension take effect on reload)
 function validateSession(){
-  if(!currentUser||window.CivicTrackCloud)return;
+  if(!currentUser||CLOUD_ON)return;
   const rec=getUsers()[(currentUser.email||'').toLowerCase()];
   if(rec){
     if(rec.active===false){currentUser=null;localStorage.removeItem('sc2_user');return}
@@ -1943,10 +1984,118 @@ function applyRole(){
   document.getElementById('su-role').textContent=label;
   document.getElementById('profile-role-display').textContent=label+' · Ahmedabad';
   const b=document.getElementById('ud-role'); b.textContent=label; b.className='role-badge '+(ROLE_BADGE[currentUser.role]||'rb-user');
+  const cc=document.getElementById('create-account-card'),cn=document.getElementById('cloud-user-note');
+  if(cc)cc.style.display=CLOUD_ON?'none':'';if(cn)cn.style.display=CLOUD_ON?'':'none';
   document.getElementById('complaints-list-title').textContent=lvl>=2?'📋 All Complaints':'📋 My Complaints';
 }
 
+/* ══════════════════════════════════════
+   CLOUD  (Supabase)
+══════════════════════════════════════ */
+let cloudUsers={};
+let rtChannel=null, rtTimer=null, recoveryPending=false;
+const fmtTime=iso=>new Date(iso).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+const fromDbComplaint=r=>({id:r.id,name:r.name,phone:r.phone||'',dept:r.dept,assignedDepartment:r.assigned_department||'',priority:r.priority,city:r.city||'',ward:r.ward||'',location:r.location||'',issue:r.issue,photoName:r.photo_name||'',status:r.status,assignedTo:r.assigned_to||'Unassigned',routingStatus:r.routing_status||'',reporterEmail:r.reporter_email||'',createdAt:r.created_at,time:fmtTime(r.created_at)});
+const fromDbFeedback=r=>({id:r.id,name:r.name,cat:r.category,text:r.message,rating:r.rating,time:fmtTime(r.created_at),createdAt:r.created_at,authorEmail:r.author_email||''});
+const fromDbProfile=r=>({id:r.id,name:r.name||r.email,email:r.email,ward:r.ward||'',phone:r.phone||'',role:r.role,active:r.active,createdAt:r.created_at});
+
+function setCloudStatus(){
+  const el=document.getElementById('cloud-status');
+  if(el)el.textContent=CLOUD_ON?'● Live — connected to Supabase. Complaints are saved to the shared database and update in real time.':'Demo mode: data stays in this browser only. Add your Supabase keys to go live.';
+  const dc=document.querySelector('.demo-creds'); if(dc)dc.style.display=CLOUD_ON?'none':'';
+}
+async function cloudLoadAll(){
+  const [c,f]=await Promise.all([
+    sb.from('complaints').select('*').order('created_at',{ascending:false}).limit(1000),
+    sb.from('feedback').select('*').order('created_at',{ascending:false}).limit(500)]);
+  if(c.error)throw c.error; if(f.error)throw f.error;
+  complaints=c.data.map(fromDbComplaint); feedbacks=f.data.map(fromDbFeedback);
+}
+async function cloudLoadUsers(){
+  if(!can(2))return;
+  const {data,error}=await sb.from('profiles').select('*').order('created_at');
+  if(error)throw error;
+  cloudUsers={}; data.forEach(r=>{cloudUsers[r.email.toLowerCase()]=fromDbProfile(r)});
+}
+function activePageId(){const a=document.querySelector('.page-section.active');return a?a.id:''}
+function rerenderAll(){
+  renderComplaints();renderQueue();renderFeedbacks();refreshDashboard();
+  if(activePageId()==='page-profile')refreshProfile();
+  if(activePageId()==='page-users')renderUsers();
+}
+function scheduleRefresh(){
+  clearTimeout(rtTimer);
+  rtTimer=setTimeout(async()=>{
+    if(!currentUser)return;
+    try{await cloudLoadAll();if(can(2))await cloudLoadUsers();rerenderAll()}catch(e){console.warn('refresh failed',e)}
+  },350);
+}
+async function cloudSyncSelf(){           // my own role / suspension changed elsewhere
+  if(!currentUser)return;
+  const {data}=await sb.from('profiles').select('*').eq('id',currentUser.id).single();
+  if(!data)return;
+  if(!data.active){toast('Your account has been suspended.','error');await doLogout(true);return}
+  if(data.role!==currentUser.role){
+    currentUser.role=data.role;currentUser.name=data.name||currentUser.name;
+    applyUserToUI();applyRole();
+    if((activePageId()==='page-queue'&&!can(2))||(activePageId()==='page-users'&&!can(3)))showPage('dashboard',document.querySelector('.nav-item'));
+    toast('Your role is now: '+(ROLE_LABEL[data.role]||data.role),'info');
+    scheduleRefresh();
+  }
+}
+function cloudSubscribe(){
+  if(rtChannel)return;
+  rtChannel=sb.channel('civictrack-live')
+    .on('postgres_changes',{event:'*',schema:'public',table:'complaints'},scheduleRefresh)
+    .on('postgres_changes',{event:'*',schema:'public',table:'feedback'},scheduleRefresh)
+    .on('postgres_changes',{event:'*',schema:'public',table:'profiles'},p=>{scheduleRefresh();if(currentUser&&p&&p.new&&p.new.id===currentUser.id)cloudSyncSelf()})
+    .subscribe();
+}
+function cloudUnsubscribe(){if(rtChannel){try{sb.removeChannel(rtChannel)}catch(e){}rtChannel=null}}
+async function cloudStartSession(user){
+  const {data:prof,error}=await sb.from('profiles').select('*').eq('id',user.id).single();
+  if(error||!prof){await sb.auth.signOut();toast('Could not load your profile. Have you run supabase_setup.sql?','error');return false}
+  if(!prof.active){await sb.auth.signOut();toast('This account is suspended. Contact a Super Admin.','error');return false}
+  currentUser={id:prof.id,name:prof.name||prof.email,email:prof.email,ward:prof.ward||'',role:prof.role};
+  try{await cloudLoadAll();if(can(2))await cloudLoadUsers()}catch(e){toast('Could not load data: '+e.message,'error')}
+  cloudSubscribe();
+  showApp();
+  if(recoveryPending){recoveryPending=false;openPwModal()}
+  return true;
+}
+async function cloudBoot(){
+  try{
+    const {data}=await sb.auth.getSession();
+    if(data&&data.session&&await cloudStartSession(data.session.user))return;
+  }catch(e){console.warn(e)}
+  showLoginPage();
+}
+function handleSignedOut(){
+  currentUser=null;complaints=[];feedbacks=[];cloudUsers={};cloudUnsubscribe();showLoginPage();
+}
+function openPwModal(){document.getElementById('new-pw').value='';document.getElementById('pwModal').classList.add('open')}
+async function submitNewPassword(){
+  const pw=document.getElementById('new-pw').value;
+  if(pw.length<6){toast('Password must be at least 6 characters.','error');return}
+  const {error}=await sb.auth.updateUser({password:pw});
+  if(error){toast(error.message,'error');return}
+  document.getElementById('pwModal').classList.remove('open');toast('Password updated ✅','success');
+}
+function changePassword(){if(CLOUD_ON)openPwModal();else toast('Connect Supabase to enable password changes.','info')}
+async function signOutEverywhere(){
+  if(CLOUD_ON){try{await sb.auth.signOut({scope:'global'})}catch(e){console.warn(e)}await doLogout(true)}
+  else confirmLogout();
+}
+if(CLOUD_ON){
+  sb.auth.onAuthStateChange(event=>{
+    if(event==='PASSWORD_RECOVERY'){if(currentUser)openPwModal();else recoveryPending=true}
+    if(event==='SIGNED_OUT'&&currentUser){handleSignedOut();toast('You were signed out.','info')}
+  });
+}
+
 function initApp() {
+  setCloudStatus();
+  if(CLOUD_ON){cloudBoot();return}
   seedUsers();
   validateSession();
   if (currentUser) {
@@ -2095,15 +2244,14 @@ async function doLogin() {
   }
   if (!valid) return;
 
-  if (window.CivicTrackCloud) {
+  if (CLOUD_ON) {
     const btn=document.getElementById('login-btn'); btn.disabled=true; btn.textContent='Signing in…';
     try {
-      const u=await window.CivicTrackCloud.login(email,pw);
-      const role=(window.CivicTrackCloud.getRole?await window.CivicTrackCloud.getRole(u.uid):'user')||'user';
-      currentUser={name:u.displayName||email.split('@')[0],email:u.email,ward:'',role};
-      if(document.getElementById('l-remember').checked)localStorage.setItem('sc2_user',JSON.stringify(currentUser));
-      showApp(); toast('Signed in securely with Firebase.','success');
-    } catch(e) { toast(e.code==='auth/invalid-credential'?'Email or password is incorrect.':(e.message||'Sign-in failed.'),'error'); }
+      rememberMe=document.getElementById('l-remember').checked;
+      const {data,error}=await sb.auth.signInWithPassword({email,password:pw});
+      if(error){toast(/confirm/i.test(error.message)?'Please confirm your email first — check your inbox.':/invalid/i.test(error.message)?'Email or password is incorrect.':error.message,'error');return}
+      if(await cloudStartSession(data.user))toast('Welcome back, '+currentUser.name.split(' ')[0]+'! 🎉','success');
+    } catch(e) { toast(e.message||'Sign-in failed.','error'); }
     finally {btn.disabled=false;btn.textContent='Sign In →';}
     return;
   }
@@ -2144,8 +2292,10 @@ async function doLogin() {
 async function resetPassword(){
   const email=document.getElementById('l-email').value.trim();
   if(!email){toast('Enter your email address first.','warn');return}
-  if(window.CivicTrackCloud){try{await window.CivicTrackCloud.reset(email);toast('Password reset email sent.','success')}catch(e){toast(e.message||'Could not send reset email.','error')}}
-  else toast('Configure Firebase to enable real password-reset emails.','info');
+  if(CLOUD_ON){
+    const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+    toast(error?error.message:'If that email is registered, a reset link is on its way.',error?'error':'success');
+  } else toast('Demo mode: connect Supabase to enable real password-reset emails.','info');
 }
 
 /* ══════════════════════════════════════
@@ -2177,20 +2327,27 @@ async function doRegister() {
   if (pw !== confirm) { setFieldErr('r-confirm','r-confirm-err','Passwords do not match.'); valid=false; }
   if (!valid) return;
 
-  if (window.CivicTrackCloud) {
+  if (CLOUD_ON) {
     const btn=document.getElementById('register-btn'); btn.disabled=true; btn.textContent='Creating account…';
     try {
       const fullName=fname+' '+lname;
-      const u=await window.CivicTrackCloud.register(fullName,email,pw,ward);
-      currentUser={name:fullName,email:u.email,ward,role:'user'};
-      localStorage.setItem('sc2_user',JSON.stringify(currentUser));
-      showApp(); toast('Account created securely with Firebase.','success');
-    } catch(e) { toast(e.code==='auth/email-already-in-use'?'This email is already registered.':(e.message||'Registration failed.'),'error'); }
+      const phoneEl=document.getElementById('r-phone'); const phone=phoneEl?phoneEl.value.trim():'';
+      rememberMe=true;
+      const {data,error}=await sb.auth.signUp({email,password:pw,options:{data:{name:fullName,ward,phone},emailRedirectTo:location.origin+location.pathname}});
+      if(error){toast(/registered|already/i.test(error.message)?'This email is already registered.':error.message,'error');return}
+      if(data.user&&data.user.identities&&data.user.identities.length===0){toast('This email is already registered.','error');return}
+      if(data.session){
+        if(await cloudStartSession(data.user))toast('Account created! Welcome, '+fname+'! 🎉','success');
+      } else {
+        toast('Account created! Check your email to confirm it, then sign in.','success');
+        switchAuthTab('login',document.querySelectorAll('.auth-tab')[0]);
+        document.getElementById('l-email').value=email;
+      }
+    } catch(e) { toast(e.message||'Registration failed.','error'); }
     finally {btn.disabled=false;btn.textContent='Create Account →';}
     return;
   }
 
-  // Check duplicate
   const users = JSON.parse(localStorage.getItem('sc2_users') || '{}');
   if (users[email.toLowerCase()]) {
     setFieldErr('r-email','r-email-err','An account with this email already exists.');
@@ -2231,18 +2388,20 @@ function socialLogin(provider) {
 function confirmLogout() {
   document.getElementById('logoutModal').classList.add('open');
 }
-async function doLogout() {
+async function doLogout(silent) {
   document.getElementById('logoutModal').classList.remove('open');
-  if(window.CivicTrackCloud) { try { await window.CivicTrackCloud.logout(); } catch(e) { console.warn(e); } }
+  if(CLOUD_ON){
+    currentUser=null;                      // so the SIGNED_OUT listener doesn't double-handle
+    try { await sb.auth.signOut(); } catch(e) { console.warn(e); }
+    cloudUnsubscribe();complaints=[];feedbacks=[];cloudUsers={};
+  }
   currentUser = null;
   localStorage.removeItem('sc2_user');
-  // Transition
   setTimeout(() => {
     showLoginPage();
-    // Reset login form
     document.getElementById('l-email').value = '';
     document.getElementById('l-password').value = '';
-    toast('You have been signed out.', 'info');
+    if(silent!==true)toast('You have been signed out.', 'info');
   }, 200);
 }
 
@@ -2263,17 +2422,22 @@ document.addEventListener('click', e => {
 /* ══════════════════════════════════════
    PROFILE SAVE
 ══════════════════════════════════════ */
-function saveProfile() {
+async function saveProfile() {
   if (!currentUser) return;
-  currentUser.name  = document.getElementById('p-name').value.trim() || currentUser.name;
-  currentUser.ward  = document.getElementById('p-ward').value;
-  localStorage.setItem('sc2_user', JSON.stringify(currentUser));
-  // Update stored users
-  const users = JSON.parse(localStorage.getItem('sc2_users') || '{}');
-  if (users[currentUser.email]) {
-    users[currentUser.email].name = currentUser.name;
-    users[currentUser.email].ward = currentUser.ward;
-    localStorage.setItem('sc2_users', JSON.stringify(users));
+  const name = document.getElementById('p-name').value.trim() || currentUser.name;
+  const ward = document.getElementById('p-ward').value;
+  if (CLOUD_ON) {
+    const {data,error}=await sb.from('profiles').update({name,ward}).eq('id',currentUser.id).select();
+    if(error||!data||!data.length){toast('Could not save profile'+(error?': '+error.message:''),'error');return}
+  }
+  currentUser.name = name; currentUser.ward = ward;
+  if (!CLOUD_ON) {
+    localStorage.setItem('sc2_user', JSON.stringify(currentUser));
+    const users = JSON.parse(localStorage.getItem('sc2_users') || '{}');
+    if (users[currentUser.email]) {
+      users[currentUser.email].name = name; users[currentUser.email].ward = ward;
+      localStorage.setItem('sc2_users', JSON.stringify(users));
+    }
   }
   applyUserToUI();
   toast('Profile updated successfully! ✅', 'success');
@@ -2354,7 +2518,7 @@ function showPage(name,btn){
   if(name==='feedback'){prefillFeedbackName();renderFeedbacks();}
   if(name==='profile'){refreshProfile();}
   if(name==='queue'){renderQueue();}
-  if(name==='users'){renderUsers();}
+  if(name==='users'){renderUsers();if(CLOUD_ON)cloudLoadUsers().then(renderUsers).catch(e=>toast('Could not load users: '+e.message,'error'));}
   if(name==='services'){setTimeout(()=>{initLiveIssueMap();if(window.issueMap)window.issueMap.invalidateSize();},180);}
   if(window.innerWidth < 900 && sidebarOpen){ toggleSidebar(); }
   window.scrollTo({top:0,behavior:'smooth'});
@@ -2375,26 +2539,33 @@ function toast(msg,type='success'){
 /* ══════════════════════════════════════
    DATA
 ══════════════════════════════════════ */
-let complaints=JSON.parse(localStorage.getItem('sc2_c')||'[]');
-let feedbacks=JSON.parse(localStorage.getItem('sc2_f')||'[]');
+let complaints=CLOUD_ON?[]:JSON.parse(localStorage.getItem('sc2_c')||'[]');
+let feedbacks=CLOUD_ON?[]:JSON.parse(localStorage.getItem('sc2_f')||'[]');
 let cFilter='all';
 let rating=0;
 
 function now(){return new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}
-function save(){localStorage.setItem('sc2_c',JSON.stringify(complaints));localStorage.setItem('sc2_f',JSON.stringify(feedbacks))}
+function save(){if(CLOUD_ON)return;localStorage.setItem('sc2_c',JSON.stringify(complaints));localStorage.setItem('sc2_f',JSON.stringify(feedbacks))}
 
 /* ══════════════════════════════════════
    COMPLAINTS
 ══════════════════════════════════════ */
-function quickComplaint(){
+let submitting=false;
+async function quickComplaint(){
+  if(submitting)return;
   const name=document.getElementById('d-name').value.trim();
   const issue=document.getElementById('d-issue').value.trim();
   if(!name||!issue){toast('Please fill name and issue description','error');return}
-  push({name,dept:document.getElementById('d-dept').value,priority:document.getElementById('d-pri').value,issue,phone:'',location:''});
-  document.getElementById('d-name').value='';document.getElementById('d-issue').value='';
-  toast('Complaint submitted successfully!','success');refreshDashboard();
+  submitting=true;
+  try{
+    const rec=await push({name,dept:document.getElementById('d-dept').value,priority:document.getElementById('d-pri').value,issue,phone:'',location:''});
+    if(!rec)return;
+    document.getElementById('d-name').value='';document.getElementById('d-issue').value='';
+    toast('Complaint submitted successfully!','success');refreshDashboard();
+  } finally {submitting=false}
 }
-function fullComplaint(){
+async function fullComplaint(){
+  if(submitting)return;
   const name=document.getElementById('c-name').value.trim();
   const issue=document.getElementById('c-issue').value.trim();
   if(!name||!issue){toast('Name and Issue description are required','error');return}
@@ -2404,36 +2575,62 @@ function fullComplaint(){
   if(!document.getElementById('c-consent').checked){toast('Please consent to share the complaint with the relevant authority.','warn');return}
   const photoInput=document.getElementById('c-photo');
   const routing={Water:'Water / Drainage Department',Electricity:'Electricity Department',Road:'Roads & Public Works',Garbage:'Sanitation / Waste Management',Health:'Public Health Department',Parks:'Parks & Gardens'};
-  push({name,phone:document.getElementById('c-phone').value.trim(),dept:document.getElementById('c-dept').value,assignedDepartment:routing[document.getElementById('c-dept').value]||'Municipal Control Room',priority:document.getElementById('c-pri').value,city,ward,location:document.getElementById('c-loc').value.trim(),issue,reporterEmail:currentUser?.email||'',photoName:photoInput?.files?.[0]?.name||''});
-  ['c-name','c-phone','c-city','c-ward','c-loc','c-issue'].forEach(id=>document.getElementById(id).value=''); document.getElementById('c-consent').checked=false; if(document.getElementById('c-photo'))document.getElementById('c-photo').value='';
-  toast('Complaint #'+complaints.length+' registered!','success');
-  renderComplaints();refreshDashboard();
+  const dept=document.getElementById('c-dept').value;
+  submitting=true;
+  try{
+    const rec=await push({name,phone:document.getElementById('c-phone').value.trim(),dept,assignedDepartment:routing[dept]||'Municipal Control Room',priority:document.getElementById('c-pri').value,city,ward,location:document.getElementById('c-loc').value.trim(),issue,photoName:(photoInput&&photoInput.files&&photoInput.files[0])?photoInput.files[0].name:''});
+    if(!rec)return;
+    ['c-name','c-phone','c-city','c-ward','c-loc','c-issue'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('c-consent').checked=false; if(photoInput)photoInput.value='';
+    toast('Complaint #'+(CLOUD_ON?rec.id:complaints.length)+' registered!','success');
+    renderComplaints();refreshDashboard();
+  } finally {submitting=false}
 }
-function push(data){
+async function push(data){
+  if(CLOUD_ON){
+    const row={name:data.name,phone:data.phone||null,dept:data.dept,assigned_department:data.assignedDepartment||null,priority:data.priority||'Normal',city:data.city||null,ward:data.ward||null,location:data.location||null,issue:data.issue,photo_name:data.photoName||null,reporter_email:currentUser.email};
+    const {data:ins,error}=await sb.from('complaints').insert(row).select().single();
+    if(error){toast('Could not submit complaint: '+error.message,'error');return null}
+    const rec=fromDbComplaint(ins); complaints.unshift(rec); updateNavBadge(); return rec;
+  }
   const record={id:Date.now(),reporterEmail:currentUser?.email||'',...data,status:'Pending',time:now(),createdAt:new Date().toISOString(),assignedTo:'Unassigned',routingStatus:'Awaiting municipal authority'};
   complaints.unshift(record);
   save();updateNavBadge();
-  if(window.CivicTrackCloud?.saveComplaint) window.CivicTrackCloud.saveComplaint(record).catch(err=>{console.error(err);toast('Saved on this device only; cloud sync failed.','warn')});
+  return record;
 }
 function refreshAll(){save();renderComplaints();renderQueue();refreshDashboard();}
-function resolve(id){
+async function setComplaint(id,dbPatch,localPatch){
+  if(CLOUD_ON){
+    const {data,error}=await sb.from('complaints').update(dbPatch).eq('id',id).select();
+    if(error||!data||!data.length){toast(error?error.message:'You are not allowed to do that.','error');return false}
+  }
+  complaints=complaints.map(c=>c.id===id?{...c,...localPatch}:c);
+  return true;
+}
+async function resolve(id){
   if(!can(2)){toast('Only admins can resolve complaints.','error');return}
-  complaints=complaints.map(c=>c.id===id?{...c,status:'Resolved',routingStatus:'Resolved by '+currentUser.name}:c);refreshAll();toast('Marked as resolved ✅','success')
+  const by='Resolved by '+currentUser.name;
+  if(await setComplaint(id,{status:'Resolved',routing_status:by},{status:'Resolved',routingStatus:by})){refreshAll();toast('Marked as resolved ✅','success')}
 }
-function reopen(id){
+async function reopen(id){
   if(!can(2)){toast('Only admins can reopen complaints.','error');return}
-  complaints=complaints.map(c=>c.id===id?{...c,status:'Pending',routingStatus:'Reopened by '+currentUser.name}:c);refreshAll();toast('Complaint reopened','info')
+  const by='Reopened by '+currentUser.name;
+  if(await setComplaint(id,{status:'Pending',routing_status:by},{status:'Pending',routingStatus:by})){refreshAll();toast('Complaint reopened','info')}
 }
-function del(id){
+async function del(id){
   const c=complaints.find(x=>x.id===id); if(!c)return;
   const own=(c.reporterEmail||'').toLowerCase()===(currentUser?.email||'').toLowerCase();
   if(!can(2)&&!(own&&c.status==='Pending')){toast('You can only withdraw your own pending complaints.','error');return}
+  if(CLOUD_ON){
+    const {data,error}=await sb.from('complaints').delete().eq('id',id).select();
+    if(error||!data||!data.length){toast(error?error.message:'You are not allowed to do that.','error');return}
+  }
   complaints=complaints.filter(x=>x.id!==id);refreshAll();toast(can(2)?'Complaint removed':'Complaint withdrawn','info')
 }
-function assignComplaint(id,val){
+async function assignComplaint(id,val){
   if(!can(2))return;
-  complaints=complaints.map(c=>c.id===id?{...c,assignedTo:val,routingStatus:val==='Unassigned'?'Awaiting municipal authority':'Assigned to '+val}:c);
-  save();renderQueue();toast(val==='Unassigned'?'Complaint unassigned':'Assigned to '+val,'success');
+  const rs=val==='Unassigned'?'Awaiting municipal authority':'Assigned to '+val;
+  if(await setComplaint(id,{assigned_to:val,routing_status:rs},{assignedTo:val,routingStatus:rs})){refreshAll();toast(val==='Unassigned'?'Complaint unassigned':'Assigned to '+val,'success')}
 }
 function visibleComplaints(){
   if(!currentUser)return [];
@@ -2525,29 +2722,43 @@ function renderUsers(){
     </tr>`;
   }).join('');
 }
-function changeRole(email,role){
+async function changeRole(email,role){
   if(!can(3)||!ROLE_LEVEL[role])return;
   const users=getUsers(), u=users[email]; if(!u)return;
   if(email.toLowerCase()===(currentUser.email||'').toLowerCase()){toast('You cannot change your own role.','warn');renderUsers();return}
   if(u.role==='superadmin'&&role!=='superadmin'&&superCount(true)<=1){toast('At least one active Super Admin is required.','error');renderUsers();return}
+  if(CLOUD_ON){
+    const {data,error}=await sb.from('profiles').update({role}).eq('id',u.id).select();
+    if(error||!data||!data.length){toast(error?error.message:'Not allowed.','error');renderUsers();return}
+  }
   u.role=role; saveUsers(users); renderUsers(); toast(`${u.name} is now ${ROLE_LABEL[role]==='Verified Citizen'?'a User':ROLE_LABEL[role]}.`,'success');
 }
-function toggleActive(email){
+async function toggleActive(email){
   if(!can(3))return;
   const users=getUsers(), u=users[email]; if(!u)return;
   if(u.role==='superadmin'&&u.active!==false&&superCount(true)<=1){toast('At least one active Super Admin is required.','error');return}
-  u.active=u.active===false; saveUsers(users); renderUsers(); toast(u.active?'Account activated':'Account suspended','info');
+  const next=u.active===false;
+  if(CLOUD_ON){
+    const {data,error}=await sb.from('profiles').update({active:next}).eq('id',u.id).select();
+    if(error||!data||!data.length){toast(error?error.message:'Not allowed.','error');return}
+  }
+  u.active=next; saveUsers(users); renderUsers(); toast(u.active?'Account activated':'Account suspended','info');
 }
-function deleteUser(email){
+async function deleteUser(email){
   if(!can(3))return;
   const users=getUsers(), u=users[email]; if(!u)return;
   if(pendingDeleteEmail!==email){pendingDeleteEmail=email;renderUsers();setTimeout(()=>{if(pendingDeleteEmail===email){pendingDeleteEmail=null;renderUsers()}},3500);return}
   pendingDeleteEmail=null;
   if(u.role==='superadmin'&&superCount(true)<=1){toast('At least one active Super Admin is required.','error');renderUsers();return}
+  if(CLOUD_ON){
+    const {error}=await sb.rpc('admin_delete_user',{target:u.id});
+    if(error){toast(error.message,'error');renderUsers();return}
+  }
   delete users[email]; saveUsers(users); renderUsers(); toast('Account deleted','info');
 }
 function addUser(){
   if(!can(3))return;
+  if(CLOUD_ON){toast('In live mode people create their own account on the sign-up page. Promote them here afterwards.','info');return}
   const name=document.getElementById('nu-name').value.trim();
   const email=document.getElementById('nu-email').value.trim().toLowerCase();
   const pw=document.getElementById('nu-pw').value;
@@ -2637,24 +2848,39 @@ function prefillFeedbackName(){
 /* ══════════════════════════════════════
    FEEDBACK
 ══════════════════════════════════════ */
-function submitFeedback(){
+async function submitFeedback(){
+  if(submitting)return;
   const text=document.getElementById('f-text').value.trim();
   if(!rating){toast('Please rate your experience','warn');return}
   if(text.length<5){toast('Please write a little more feedback (at least 5 characters)','error');return}
-  feedbacks.unshift({id:Date.now(),name:document.getElementById('f-name').value.trim()||'Anonymous',cat:document.getElementById('f-cat').value,text,rating,time:now(),createdAt:new Date().toISOString(),authorEmail:currentUser?.email||''});
-  save();
-  document.getElementById('f-text').value='';updateFbCount();setRating(0);
-  document.getElementById('fb-filter').value='all';
-  renderFeedbacks();refreshDashboard();
-  toast('Thank you for your feedback! 🙏','success');
+  const name=document.getElementById('f-name').value.trim()||'Anonymous', cat=document.getElementById('f-cat').value;
+  submitting=true;
+  try{
+    if(CLOUD_ON){
+      const {data,error}=await sb.from('feedback').insert({name,category:cat,message:text,rating,author_email:currentUser.email}).select().single();
+      if(error){toast('Could not send feedback: '+error.message,'error');return}
+      feedbacks.unshift(fromDbFeedback(data));
+    } else {
+      feedbacks.unshift({id:Date.now(),name,cat,text,rating,time:now(),createdAt:new Date().toISOString(),authorEmail:currentUser?.email||''});
+      save();
+    }
+    document.getElementById('f-text').value='';updateFbCount();setRating(0);
+    document.getElementById('fb-filter').value='all';
+    renderFeedbacks();refreshDashboard();
+    toast('Thank you for your feedback! 🙏','success');
+  } finally {submitting=false}
 }
 function canDeleteFeedback(f){
   if(can(2))return true;
   return !!f.authorEmail&&f.authorEmail.toLowerCase()===(currentUser?.email||'').toLowerCase();
 }
-function deleteFeedback(id){
+async function deleteFeedback(id){
   const f=feedbacks.find(x=>x.id===id); if(!f)return;
   if(!canDeleteFeedback(f)){toast('You can only delete your own feedback.','error');return}
+  if(CLOUD_ON){
+    const {data,error}=await sb.from('feedback').delete().eq('id',id).select();
+    if(error||!data||!data.length){toast(error?error.message:'You are not allowed to do that.','error');return}
+  }
   feedbacks=feedbacks.filter(x=>x.id!==id);save();renderFeedbacks();refreshDashboard();toast('Feedback removed','info');
 }
 function renderFeedbackSummary(){
@@ -2813,79 +3039,6 @@ function clearIssuePins(){
    BOOT
 ══════════════════════════════════════ */
 initApp();
-</script>
-
-<script type="module">
-/*
- * CivicTrack cloud bridge — Firebase Authentication + Firestore.
- * Replace the demo values with your own Firebase Web App config.
- * Deploy on HTTPS (Firebase Hosting recommended). Never put admin SDK secrets here.
- */
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getFirestore, doc, setDoc, getDoc, addDoc, collection, serverTimestamp, query, where, onSnapshot, orderBy } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
-
-const firebaseConfig = {
-  apiKey: "PASTE_YOUR_FIREBASE_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
-};
-const cloudStatus = (msg) => { const el=document.getElementById('cloud-status'); if(el)el.textContent=msg; };
-const isConfigured = firebaseConfig.apiKey !== "PASTE_YOUR_FIREBASE_API_KEY" && firebaseConfig.projectId !== "YOUR_PROJECT_ID";
-if (!isConfigured) {
-  cloudStatus('Cloud database not connected yet — add your Firebase Web App config to enable secure cross-city delivery.');
-} else {
-  try {
-    const app=initializeApp(firebaseConfig), auth=getAuth(app), db=getFirestore(app);
-    window.CivicTrackCloud = {
-      auth, db,
-      async register(name,email,password,city='') {
-        const cred=await createUserWithEmailAndPassword(auth,email,password);
-        await updateProfile(cred.user,{displayName:name});
-        await setDoc(doc(db,'users',cred.user.uid),{name,email:email.toLowerCase(),city,role:'user',createdAt:serverTimestamp()});
-        return cred.user;
-      },
-      async getRole(uid){const r=((await getDoc(doc(db,'users',uid))).data()||{}).role;return r==='citizen'?'user':(r||'user');},
-      async login(email,password){return (await signInWithEmailAndPassword(auth,email,password)).user;},
-      async logout(){await signOut(auth);},
-      async reset(email){return sendPasswordResetEmail(auth,email);},
-      async saveComplaint(c) {
-        const user=auth.currentUser;
-        if(!user) throw new Error('Please sign in before submitting a cloud complaint.');
-        const profile=(await getDoc(doc(db,'users',user.uid))).data()||{};
-        const ref=await addDoc(collection(db,'complaints'),{
-          ...c, id:String(c.id), reporterUid:user.uid, reporterEmail:user.email,
-          cityKey:String(c.city||profile.city||'').trim().toLowerCase(),
-          wardKey:String(c.ward||'').trim().toLowerCase(),
-          departmentKey:String(c.dept||'').trim().toLowerCase(),
-          status:'Pending', assignedToUid:null, createdAt:serverTimestamp(), updatedAt:serverTimestamp()
-        });
-        cloudStatus('Complaint delivered to the shared CivicTrack database. Reference: '+ref.id);
-        return ref.id;
-      },
-      watchMyComplaints(uid, callback) {
-        return onSnapshot(query(collection(db,'complaints'),where('reporterUid','==',uid),orderBy('createdAt','desc')),snap=>callback(snap.docs.map(d=>({cloudId:d.id,...d.data()}))));
-      },
-      watchAuthorityQueue(city,ward,department,callback) {
-        // Use this only after role is verified by Firestore rules. Filters are exact and normalized.
-        const filters=[where('cityKey','==',city.trim().toLowerCase())];
-        if(ward)filters.push(where('wardKey','==',ward.trim().toLowerCase()));
-        if(department)filters.push(where('departmentKey','==',department.trim().toLowerCase()));
-        return onSnapshot(query(collection(db,'complaints'),...filters,orderBy('createdAt','desc')),snap=>callback(snap.docs.map(d=>({cloudId:d.id,...d.data()}))));
-      }
-    };
-    onAuthStateChanged(auth,user=>{
-      if(user){
-        cloudStatus('Cloud connected · signed in as '+user.email+'. New complaints sync across devices.');
-        // Firebase auth is authoritative once configured. The legacy demo UI remains for preview;
-        // deploy the secure rules below before public use.
-      } else cloudStatus('Cloud connected · sign in to submit complaints to the shared municipal database.');
-    });
-  } catch(e) { console.error(e); cloudStatus('Firebase could not initialize. Check your project config and authorized domains.'); }
-}
 </script>
 
 </body>
