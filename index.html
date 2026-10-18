@@ -925,6 +925,11 @@ body{overflow-x:hidden}
 .ticker-text{animation:none;display:inline-block;padding-right:40px}
 @keyframes tickermove{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 
+/* login mode banner */
+.mode-banner{font-size:12px;font-weight:600;line-height:1.45;border-radius:10px;padding:9px 12px;margin-bottom:16px}
+.mb-ok{background:var(--g50);color:var(--g700);border:1px solid var(--g200)}
+.mb-warn{background:#fff7e6;color:#9a6a12;border:1px solid #f1d9a6}
+.mb-bad{background:#fdecea;color:#b3261e;border:1px solid #f5c2be}
 /* login brand on phones */
 .login-mobile-brand{display:none;align-items:center;gap:12px;margin-bottom:26px}
 .lmb-icon{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,var(--g400),var(--g300));display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 6px 18px rgba(40,168,84,.35)}
@@ -1910,12 +1915,14 @@ body{overflow-x:hidden}
 ══════════════════════════════════════ */
 const SUPABASE_URL      = 'https://pvckofvbdjogdjdnjbfq.supabase.com';       // e.g. https://abcdefgh.supabase.co
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB2Y2tvZnZiZGpvZ2RqZG5qYmZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzMzI2MTYsImV4cCI6MjEwNzkwODYxNn0.XleugdRFLBlrJNLyXyPkaaC6AbXH6PZ-5am4hMVqLbk';
+
 let rememberMe = true;
 let sb = null;
+let CLOUD_REASON = 'live';   // 'live' | 'keys' (not pasted) | 'lib' (library blocked)
 (function initSupabase(){
-  const ok = /^https:\/\/\S+$/.test(SUPABASE_URL) && !SUPABASE_URL.includes('PASTE') && SUPABASE_ANON_KEY.length > 30 && !SUPABASE_ANON_KEY.startsWith('PASTE');
-  if(!ok) return;
-  if(!window.supabase || !window.supabase.createClient){ console.warn('Supabase library failed to load — running in demo mode.'); return; }
+  const ok = /^https:\/\/\S+$/.test(SUPABASE_URL) && !SUPABASE_URL.includes('PASTE') && !SUPABASE_URL.includes('abcdefgh') && SUPABASE_ANON_KEY.length > 30 && !SUPABASE_ANON_KEY.startsWith('PASTE');
+  if(!ok){ CLOUD_REASON='keys'; return; }
+  if(!window.supabase || !window.supabase.createClient){ CLOUD_REASON='lib'; console.warn('Supabase library failed to load — running in demo mode.'); return; }
   // "Remember me" unchecked → keep the session only for this tab
   const storage = {
     getItem:k=>{const v=sessionStorage.getItem(k);return v!==null?v:localStorage.getItem(k)},
@@ -2002,6 +2009,15 @@ function setCloudStatus(){
   const el=document.getElementById('cloud-status');
   if(el)el.textContent=CLOUD_ON?'● Live — connected to Supabase. Complaints are saved to the shared database and update in real time.':'Demo mode: data stays in this browser only. Add your Supabase keys to go live.';
   const dc=document.querySelector('.demo-creds'); if(dc)dc.style.display=CLOUD_ON?'none':'';
+  const box=document.querySelector('.login-form-box');
+  if(box){
+    let b=document.getElementById('mode-banner');
+    if(!b){b=document.createElement('div');b.id='mode-banner';box.insertBefore(b,box.firstChild)}
+    const m={live:['ok','● Live — connected to Supabase'],
+             keys:['warn','Demo mode — the Supabase URL / key in this file are missing or still example values. Paste your real ones from Supabase → Project Settings → API.'],
+             lib:['bad','Demo mode — the Supabase library could not load. Check your internet connection or ad-blocker, then hard-refresh.']}[CLOUD_REASON];
+    b.className='mode-banner mb-'+m[0]; b.textContent=m[1];
+  }
 }
 async function cloudLoadAll(){
   const [c,f]=await Promise.all([
@@ -2053,7 +2069,11 @@ function cloudSubscribe(){
 function cloudUnsubscribe(){if(rtChannel){try{sb.removeChannel(rtChannel)}catch(e){}rtChannel=null}}
 async function cloudStartSession(user){
   const {data:prof,error}=await sb.from('profiles').select('*').eq('id',user.id).single();
-  if(error||!prof){await sb.auth.signOut();toast('Could not load your profile. Have you run supabase_setup.sql?','error');return false}
+  if(error||!prof){
+    await sb.auth.signOut();
+    toast(!prof?'Your login works, but your account has no profile row yet. In Supabase → SQL Editor, run supabase_setup.sql again (it adds missing profiles), then sign in.':'Could not load your profile: '+(error&&error.message),'error');
+    return false;
+  }
   if(!prof.active){await sb.auth.signOut();toast('This account is suspended. Contact a Super Admin.','error');return false}
   currentUser={id:prof.id,name:prof.name||prof.email,email:prof.email,ward:prof.ward||'',role:prof.role};
   try{await cloudLoadAll();if(can(2))await cloudLoadUsers()}catch(e){toast('Could not load data: '+e.message,'error')}
